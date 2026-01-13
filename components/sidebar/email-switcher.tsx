@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast"
 import useSWR from 'swr'
 import { EmailAddress } from "@/lib/http-client"
 import { useSettings } from "@/store/use-settings"
+import { useConfigs } from "@/store/use-configs"
 
 export function EmailSwitcher() {
   const { addresses, currentAddress, setAddresses, setCurrentAddress } = useAddressStore()
@@ -36,34 +37,71 @@ export function EmailSwitcher() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [addressToDelete, setAddressToDelete] = useState<EmailAddress | null>(null)
   const { mutate } = useSWR('/api/addresses')
-  const { apiBaseUrl, authToken } = useSettings()
+  const activeConfig = useConfigs(state => state.getActiveConfig())
+  const activeConfigId = useConfigs(state => state.activeConfigId)
+  const apiBaseUrl = activeConfig?.apiBaseUrl || null
+  const authToken = activeConfig?.authToken || null
 
+  // 监听配置切换，重新加载对应配置的地址
+  useEffect(() => {
+    if (activeConfigId) {
+      console.log('[EmailSwitcher] 配置切换，重新加载地址:', activeConfigId)
+      // 使用动态存储键加载地址
+      const storageKey = `address-storage-${activeConfigId}`
+      const stored = localStorage.getItem(storageKey)
+
+      if (stored) {
+        try {
+          const data = JSON.parse(stored)
+          if (data.state) {
+            setAddresses(data.state.addresses || [])
+            setCurrentAddress(data.state.currentAddress || null)
+          }
+        } catch (error) {
+          console.error('[EmailSwitcher] 加载地址失败:', error)
+        }
+      } else {
+        // 新配置，清空地址列表
+        setAddresses([])
+        setCurrentAddress(null)
+      }
+    }
+  }, [activeConfigId, setAddresses, setCurrentAddress])
+
+  // 监听配置变化，重新加载地址列表
   useEffect(() => {
     const fetchAddresses = async () => {
+      if (!apiBaseUrl || !authToken) {
+        console.log('[EmailSwitcher] 未配置 API，跳过加载地址')
+        return
+      }
+
       try {
+        console.log('[EmailSwitcher] 加载地址列表')
         const addresses = await HttpClient.getAddresses()
+        console.log('[EmailSwitcher] 地址列表:', addresses)
         setAddresses(addresses)
+
+        // 保存到对应配置的存储中
+        if (activeConfigId) {
+          const storageKey = `address-storage-${activeConfigId}`
+          const currentData = {
+            state: {
+              addresses,
+              currentAddress: currentAddress,
+            }
+          }
+          localStorage.setItem(storageKey, JSON.stringify(currentData))
+        }
       } catch (error) {
-        console.error('Failed to fetch addresses:', error)
+        console.error('[EmailSwitcher] 加载地址失败:', error)
       }
     }
 
-    if (addresses.length === 0) {
+    if (apiBaseUrl && authToken) {
       fetchAddresses()
     }
-  }, [addresses.length, setAddresses])
-
-  useEffect(() => {
-    if (!currentAddress && addresses.length > 0) {
-      setCurrentAddress(addresses[0])
-    }
-  }, [addresses, currentAddress, setCurrentAddress])
-
-  useEffect(() => {
-    if (!open) {
-      setSearch("")
-    }
-  }, [open])
+  }, [apiBaseUrl, authToken, activeConfigId, setAddresses, currentAddress])
 
   const allMailsOption = useMemo(() => ({
     id: -1,
@@ -74,8 +112,16 @@ export function EmailSwitcher() {
     send_count: 0,
   }), [])
 
+  // 设置默认地址为"所有邮件"
+  useEffect(() => {
+    if (!currentAddress) {
+      console.log('[EmailSwitcher] 设置默认地址为"所有邮件"')
+      setCurrentAddress(allMailsOption)
+    }
+  }, [currentAddress, setCurrentAddress, allMailsOption])
+
   const filteredAddresses = useMemo(() => {
-    const filtered = addresses.filter(address => 
+    const filtered = addresses.filter(address =>
       address.name.toLowerCase().includes(search.toLowerCase())
     )
     return [allMailsOption, ...filtered]
@@ -83,8 +129,8 @@ export function EmailSwitcher() {
 
   if (!apiBaseUrl || !authToken) {
     return (
-      <Button 
-        variant="ghost" 
+      <Button
+        variant="ghost"
         className="w-full justify-between hover:bg-accent rounded-lg h-11 lg:h-14 px-2"
         onClick={() => {
           (document.querySelector('[data-settings-trigger="true"]') as HTMLElement)?.click()
@@ -115,11 +161,11 @@ export function EmailSwitcher() {
 
     try {
       await HttpClient.deleteAddress(addressToDelete.id)
-      
+
       // 更新本地邮箱列表
       const newAddresses = addresses.filter(addr => addr.id !== addressToDelete.id)
       setAddresses(newAddresses)
-      
+
       // 如果删除的是当前选中的邮箱，切换到第一个邮箱
       if (currentAddress?.id === addressToDelete.id && newAddresses.length > 0) {
         setCurrentAddress(newAddresses[0])
@@ -130,7 +176,7 @@ export function EmailSwitcher() {
       })
       setDeleteDialogOpen(false)
       setAddressToDelete(null)
-      
+
       // 刷新邮箱列表
       mutate('/api/addresses')
     } catch (error) {
@@ -144,8 +190,8 @@ export function EmailSwitcher() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button 
-          variant="ghost" 
+        <Button
+          variant="ghost"
           className="w-full justify-between hover:bg-accent rounded-lg h-11 lg:h-14 px-2"
         >
           <div className="flex items-center gap-2 lg:gap-3 min-w-0">
@@ -163,15 +209,15 @@ export function EmailSwitcher() {
         <DialogHeader>
           <DialogTitle>选择邮箱账号</DialogTitle>
         </DialogHeader>
-        <div 
-          className="relative mb-4 cursor-text" 
+        <div
+          className="relative mb-4 cursor-text"
           onClick={() => inputRef.current?.focus()}
         >
-          <Search 
+          <Search
             className={cn(
               "absolute left-3 top-3 h-4 w-4 text-muted-foreground transition-opacity duration-200",
               search && "opacity-0"
-            )} 
+            )}
           />
           <Input
             ref={inputRef}

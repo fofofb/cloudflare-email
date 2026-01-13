@@ -1,5 +1,5 @@
 import { processItem } from './email-parser'
-import { useSettings } from "@/store/use-settings"
+import { useConfigs } from "@/store/use-configs"
 
 type RequestOptions = {
   method?: string
@@ -39,9 +39,9 @@ export class HttpClient {
   private static mailCache: Map<string, MailsResponse> = new Map()
 
   private static async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-    const settings = useSettings.getState()
-    const baseUrl = settings.apiBaseUrl || process.env.NEXT_PUBLIC_API_BASE_URL
-    const authToken = settings.authToken || process.env.NEXT_PUBLIC_AUTH_TOKEN
+    const activeConfig = useConfigs.getState().getActiveConfig()
+    const baseUrl = activeConfig?.apiBaseUrl || process.env.NEXT_PUBLIC_API_BASE_URL
+    const authToken = activeConfig?.authToken || process.env.NEXT_PUBLIC_AUTH_TOKEN
 
     // 确保 baseUrl 存在
     if (!baseUrl) {
@@ -77,13 +77,20 @@ export class HttpClient {
     const cacheKey = `${address}-${offset}-${limit}`
     const cached = this.mailCache.get(cacheKey)
     if (cached) {
+      console.log('[HttpClient.getMails] 使用缓存:', cacheKey)
       return cached
     }
-    
+
+    const requestUrl = `/admin/mails?limit=${limit}&offset=${offset}&address=${address}`
+    console.log('[HttpClient.getMails] 请求 URL:', requestUrl, { address, limit, offset })
+
     try {
-      const response = await this.request<MailResponse>(
-        `/admin/mails?limit=${limit}&offset=${offset}&address=${address}`
-      )
+      const response = await this.request<MailResponse>(requestUrl)
+
+      console.log('[HttpClient.getMails] 原始响应:', {
+        resultsCount: response?.results?.length,
+        count: response?.count
+      })
 
       if (!response || !response.results) {
         throw new Error('Invalid response structure')
@@ -118,7 +125,7 @@ export class HttpClient {
     try {
       const response = await this.getMails(address)
       const mail = response.items.find(item => item.id.toString() === id)
-      
+
       if (!mail) {
         throw new Error('Mail not found')
       }

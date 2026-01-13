@@ -3,8 +3,8 @@
 import { Mail, HttpClient } from "@/lib/http-client"
 import { formatDistanceToNow, addHours } from "date-fns"
 import { zhCN } from "date-fns/locale"
-import { Loader2 } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { Loader2, RefreshCw } from "lucide-react"
+import { useEffect, useRef, useState, useMemo } from "react"
 import { MailView } from "./mail-view"
 import { MobileMailView } from "./mobile-mail-view"
 import { cn } from "@/lib/utils"
@@ -12,24 +12,39 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Bell } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { useAddressStore } from "@/store/use-address"
+import { MailSearch } from "./mail-search"
 
 interface MailListProps {
   mails: Mail[]
   hasMore: boolean
   loadingMore: boolean
   onLoadMore: () => void
+  onRefresh?: () => void
 }
 
-export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore }: MailListProps) {
+export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore, onRefresh }: MailListProps) {
   const { currentAddress } = useAddressStore()
   const [mails, setMails] = useState<Mail[]>(initialMails)
   const [newMailIds, setNewMailIds] = useState<Set<number>>(new Set())
+  const [refreshing, setRefreshing] = useState(false)
+  const [searchQuery, setSearchQuery] = useState("")
+  const [isMobile, setIsMobile] = useState(false)
   const { toast } = useToast()
   const lastMailId = useRef(mails[0]?.id || 0)
   const [selectedMail, setSelectedMail] = useState<Mail | null>(null)
-  const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024
   const listRef = useRef<HTMLDivElement>(null)
   const loadingRef = useRef<HTMLDivElement>(null)
+
+  // 检测移动端（仅在客户端执行，避免 hydration 错误）
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 1024)
+    }
+
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
+  }, [])
 
   useEffect(() => {
     setMails(initialMails)
@@ -61,17 +76,17 @@ export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore
   useEffect(() => {
     const checkNewMails = async () => {
       try {
-        const response = currentAddress?.id === -1 
+        const response = currentAddress?.id === -1
           ? await HttpClient.getAllMails(20, 0)
           : await HttpClient.getMails(currentAddress?.id.toString() || '0', 20, 0)
-          
+
         const newMails = response.items
 
         if (newMails[0]?.id > lastMailId.current) {
           const newMailsToAdd = newMails.filter(mail => mail.id > lastMailId.current)
-          
+
           lastMailId.current = newMails[0].id
-          
+
           const newIds = new Set(Array.from(newMailIds))
           newMailsToAdd.forEach(mail => newIds.add(mail.id))
           setNewMailIds(newIds)
@@ -93,6 +108,22 @@ export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore
     return () => clearInterval(interval)
   }, [toast, newMailIds, currentAddress])
 
+  const handleRefresh = async () => {
+    if (!onRefresh || refreshing) return
+
+    setRefreshing(true)
+    try {
+      await onRefresh()
+      toast({
+        description: "邮件列表已刷新",
+      })
+    } catch (error) {
+      console.error('Failed to refresh:', error)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   const handleMailClick = (mail: Mail) => {
     setSelectedMail(mail)
     if (newMailIds.has(mail.id)) {
@@ -102,10 +133,26 @@ export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore
     }
   }
 
+  // 过滤邮件
+  const filteredMails = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return mails
+    }
+
+    const query = searchQuery.toLowerCase()
+    return mails.filter((mail) => {
+      const subject = (mail.subject || '').toLowerCase()
+      const content = (mail.content || mail.text || mail.message || '').toLowerCase()
+      const from = (mail.from || mail.source || '').toLowerCase()
+
+      return subject.includes(query) || content.includes(query) || from.includes(query)
+    })
+  }, [mails, searchQuery])
+
   return (
     <div className="flex h-full">
       {/* 邮件列表 */}
-      <motion.div 
+      <motion.div
         className={cn(
           "w-full lg:w-[350px] border-r",
           isMobile && selectedMail && "hidden"
@@ -116,8 +163,37 @@ export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore
         transition={{ duration: 0.2 }}
       >
         <div className="divide-y overflow-y-auto h-full" ref={listRef}>
+          {/* 搜索栏和刷新按钮 */}
+          <div className="sticky top-0 z-10 bg-background border-b">
+            <div className="px-4 py-3">
+              <MailSearch onSearch={setSearchQuery} />
+            </div>
+            {onRefresh && (
+              <div className="px-4 py-2 flex items-center justify-between border-t">
+                <span className="text-sm text-muted-foreground">
+                  {searchQuery ? (
+                    <>找到 {filteredMails.length} 封邮件</>
+                  ) : (
+                    <>{mails.length} 封邮件</>
+                  )}
+                </span>
+                <button
+                  onClick={handleRefresh}
+                  disabled={refreshing}
+                  className="p-2 hover:bg-muted rounded-md transition-colors disabled:opacity-50"
+                  title="刷新邮件列表"
+                >
+                  <RefreshCw className={cn(
+                    "h-4 w-4",
+                    refreshing && "animate-spin"
+                  )} />
+                </button>
+              </div>
+            )}
+          </div>
+
           <AnimatePresence mode="wait">
-            {mails.map((mail) => (
+            {filteredMails.map((mail) => (
               <motion.div
                 key={mail.id}
                 initial={{ opacity: 0, y: 20 }}
@@ -140,9 +216,9 @@ export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore
                         {mail.subject || '无主题'}
                       </div>
                       <div className="text-xs text-muted-foreground shrink-0 w-[5.5rem] text-right">
-                        {formatDistanceToNow(addHours(new Date(mail.created_at), 8), { 
-                          locale: zhCN, 
-                          addSuffix: true 
+                        {formatDistanceToNow(addHours(new Date(mail.created_at), 8), {
+                          locale: zhCN,
+                          addSuffix: true
                         })}
                       </div>
                     </div>
@@ -159,7 +235,7 @@ export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore
           </AnimatePresence>
 
           {hasMore && (
-            <div 
+            <div
               ref={loadingRef}
               className="p-4 text-center text-sm text-muted-foreground"
             >
@@ -189,14 +265,14 @@ export function MailList({ mails: initialMails, hasMore, loadingMore, onLoadMore
             )}
           >
             {isMobile ? (
-              <MobileMailView 
-                mail={selectedMail} 
-                onClose={() => setSelectedMail(null)} 
+              <MobileMailView
+                mail={selectedMail}
+                onClose={() => setSelectedMail(null)}
               />
             ) : (
-              <MailView 
-                mail={selectedMail} 
-                onClose={() => setSelectedMail(null)} 
+              <MailView
+                mail={selectedMail}
+                onClose={() => setSelectedMail(null)}
               />
             )}
           </motion.div>
